@@ -1,0 +1,112 @@
+#cloud-config
+
+hostname: cibox
+
+write_files:
+  - path: /etc/systemd/system/docker.service.d/increase-ulimit.conf
+    owner: core:core
+    permissions: 0644
+    content: |
+      [Service]
+      LimitMEMLOCK=infinity
+
+#  - path: /etc/resolv.conf
+#    permissions: 0644
+#    owner: root
+#    content: |
+#      nameserver 127.0.0.1
+#      nameserver 8.8.8.8
+
+coreos:
+  update:
+    # we don't want our ci box rebooting
+    reboot-strategy: off
+
+  units:
+    - name: docker.service
+      command: restart
+
+    - name: etcd.service
+      command: stop
+      enable: false
+
+    - name: etcd2.service
+      command: stop
+      enable: false
+
+    - name: docker-dangling.service
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Remove dangling images
+        After=docker.service
+        Requires=docker.service
+        [Service]
+        Type=oneshot
+        User=core
+        TimeoutStartSec=0
+        ExecStart=-/usr/bin/bash -c "docker rmi $(docker images -q -f dangling=true)"
+        [Install]
+        WantedBy=local.target
+
+    - name: docker-dangling.timer
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Remove dangling images daily
+        [Timer]
+        OnCalendar=*-*-* 07:00:00
+        [Install]
+        WantedBy=timers.target
+
+    - name: nginx-proxy.service
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Run nginx-proxy
+        After=docker.service
+        Requires=docker.service
+        [Service]
+        User=core
+        KillMode=none
+        TimeoutStartSec=0
+        Restart=always
+        RestartSec=10s
+        Environment="DEFAULT_HOST=jenkins.local.com.br"
+        ExecStartPre=/usr/bin/docker pull jwilder/nginx-proxy
+        ExecStartPre=-/usr/bin/docker rm -f nginx-proxy
+        ExecStart=/usr/bin/docker run --privileged=true --rm --name nginx-proxy -e DEFAULT_HOST -v /var/run/docker.sock:/tmp/docker.sock -p 80:80 jwilder/nginx-proxy
+        ExecStartPost=-/usr/bin/docker ps -a -q | xargs docker rm
+        ExecStop=/usr/bin/docker stop -t 10 nginx-proxy ; /usr/bin/docker rm -f nginx-proxy
+        ExecStopPost=-/usr/bin/docker ps -a -q | xargs docker rm
+        [Install]
+        WantedBy=local.target
+
+    - name: jenkins.service
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Run jenkins
+        After=docker.service
+        Requires=docker.service
+        [Service]
+        User=core
+        KillMode=none
+        TimeoutStartSec=0
+        Restart=always
+        RestartSec=10s
+        Environment="VIRTUAL_PORT=8080"
+        Environment="VIRTUAL_HOST=jenkins.local.com.br"
+        ExecStartPre=-/usr/bin/bash -c "sudo mkdir -p /data/jenkins_home && sudo ln -sf /data/jenkins_home /var/jenkins_home"
+        ExecStartPre=/usr/bin/docker pull geovanasouza/jenkins:latest
+        ExecStartPre=-/usr/bin/docker rm -f jenkins
+        ExecStart=/usr/bin/docker run --rm --name jenkins -e VIRTUAL_PORT -e VIRTUAL_HOST -v /var/jenkins_home:/var/jenkins_home -v /vault/.ssh:/vault/.ssh -v /var/run/docker.sock:/var/run/docker.sock -p ::8080 geovanasouza/jenkins:latest
+        ExecStartPost=-/usr/bin/docker ps -a -q | xargs docker rm
+        ExecStop=/usr/bin/docker stop -t 10 jenkins ; /usr/bin/docker rm -f jenkins
+        ExecStopPost=-/usr/bin/docker ps -a -q | xargs docker rm
+        [Install]
+        WantedBy=local.target
