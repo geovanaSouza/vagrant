@@ -4,7 +4,7 @@
 
 * Oracle Linux 7.3
 * Oracle Database Standard 12.2.0.1
-* Docker (latest)
+* Docker 17.03
 
 ## Pre-requisites
 
